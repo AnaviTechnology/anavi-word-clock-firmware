@@ -44,6 +44,8 @@
 #include <nvs_flash.h>
 #include <SPIFFS.h>
 
+#include "config.h"
+
 // NTP server setup
 WiFiUDP ntpUDP;
 // UTC+2 for Bulgaria
@@ -53,50 +55,6 @@ NTPClient timeClient(ntpUDP, "pool.ntp.org", 2 * 3600);
 
 // 64-bit "mask" for each pixel in the matrix- is it on or off?
 uint64_t mask;
-
-// define masks for each word. we add them with "bitwise or" to generate a mask for the entire "phrase".
-#define MFIVE    mask |= 0xF0000000000 // these are in hexadecimal, 00 for an empty row
-#define MTEN     mask |= 0x1A00000000000000
-#define AQUARTER mask |= 0x1FE000000000000
-#define TWENTY   mask |= 0x7E00000000000000
-#define HALF     mask |= 0xF00000000000
-#define PAST     mask |= 0x7800000000
-#define TO       mask |= 0xC00000000
-#define ONE      mask |= 0x43
-#define TWO      mask |= 0x340
-#define THREE    mask |= 0x1F0000
-#define FOUR     mask |= 0xF0
-#define FIVE     mask |= 0xF000000
-#define SIX      mask |= 0xE00000
-#define SEVEN    mask |= 0x80F000
-#define EIGHT    mask |= 0xF8000000
-#define NINE     mask |= 0xF
-#define TEN      mask |= 0x80018000
-#define ELEVEN   mask |= 0xFC00
-#define TWELVE   mask |= 0x6F00
-#define ANAVI    mask |= 0x1100200000002004
-#define WIFI     mask |= 0x400020003000000
-#define HA       mask |= 0x300000000000
-
-// define pins
-#define NEOPIN 10  // connect to DIN on NeoMatrix 8x8
-
-// brightness based on time of day- could try warmer colors at night?
-#define DAYBRIGHTNESS 40
-#define NIGHTBRIGHTNESS 20
-
-// cutoff times for day / night brightness. feel free to modify.
-#define MORNINGCUTOFF 7  // when does daybrightness begin?   7am
-#define NIGHTCUTOFF   22 // when does nightbrightness begin? 10pm
-
-
-// define delays
-#define FLASHDELAY 100  // delay for startup "flashWords" sequence
-#define SHIFTDELAY 100   // controls color shifting speed
-
-// Define US or EU rules for DST comment out as required. More countries could be added with different rules in DST_RTC.cpp
-const char rulesDST[] = "US"; // US DST rules
-// const char rulesDST[] = "EU";   // EU DST rules
 
 DateTime theTime; // Holds current clock time
 
@@ -109,11 +67,6 @@ Adafruit_NeoMatrix matrix = Adafruit_NeoMatrix(8, 8, NEOPIN,
                             NEO_MATRIX_ROWS + NEO_MATRIX_ZIGZAG,
                             NEO_GRB         + NEO_KHZ800);
 
-// Configure pins
-const int pinAlarm = D3;
-const int pinButton = D8;
-//extra pins: 0, 1 and 2
-const int pinExtra = D2;
 
 //define your default values here, if there are different values in config.json, they are overwritten.
 char mqtt_server[40] = "mqtt.eclipseprojects.io";
