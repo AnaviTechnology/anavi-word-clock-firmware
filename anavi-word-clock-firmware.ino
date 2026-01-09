@@ -20,6 +20,13 @@
 
 */
 
+// Include configuration header with all constants
+#include "config.h"
+
+// Include function headers
+#include "clock.h"
+#include "network.h"
+
 // include the library code:
 #include <Wire.h>
 #include <Adafruit_GFX.h>
@@ -44,14 +51,9 @@
 #include <nvs_flash.h>
 #include <SPIFFS.h>
 
-#include "config.h"
-
 // NTP server setup
 WiFiUDP ntpUDP;
-// UTC+2 for Bulgaria
-NTPClient timeClient(ntpUDP, "pool.ntp.org", 2 * 3600); 
-
-// define how to write each of the words
+NTPClient timeClient(ntpUDP, NTP_SERVER, NTP_OFFSET);
 
 // 64-bit "mask" for each pixel in the matrix- is it on or off?
 uint64_t mask;
@@ -67,27 +69,26 @@ Adafruit_NeoMatrix matrix = Adafruit_NeoMatrix(8, 8, NEOPIN,
                             NEO_MATRIX_ROWS + NEO_MATRIX_ZIGZAG,
                             NEO_GRB         + NEO_KHZ800);
 
-
 //define your default values here, if there are different values in config.json, they are overwritten.
-char mqtt_server[40] = "mqtt.eclipseprojects.io";
-char mqtt_port[6] = "1883";
-char workgroup[32] = "workgroup";
+char mqtt_server[MQTT_SERVER_SIZE] = DEFAULT_MQTT_SERVER;
+char mqtt_port[MQTT_PORT_SIZE] = DEFAULT_MQTT_PORT;
+char workgroup[WORKGROUP_SIZE] = DEFAULT_WORKGROUP;
 // MQTT username and password
-char username[20] = "";
-char password[20] = "";
+char username[USERNAME_SIZE] = "";
+char password[PASSWORD_SIZE] = "";
 // Configurations for number of LEDs in each strip
-char configLed1[20] = "10";
+char configLed1[LED_CONFIG_SIZE] = DEFAULT_LED_COUNT;
 // LED type
-char ledType[20] = "WS2812B";
+char ledType[LED_CONFIG_SIZE] = DEFAULT_LED_TYPE;
 // Color order of the LEDs: GRB, RGB
-char ledColorOrder[20] = "GRB";
+char ledColorOrder[LED_CONFIG_SIZE] = DEFAULT_LED_COLOR_ORDER;
 #ifdef HOME_ASSISTANT_DISCOVERY
-char ha_name[32+1] = "";        // Make sure the machineId fits.
+char ha_name[HA_NAME_SIZE + 1] = "";        // Make sure the machineId fits.
 #endif
 #ifdef OTA_UPGRADES
-char ota_server[40];
+char ota_server[OTA_SERVER_SIZE];
 #endif
-char temp_scale[40] = "celsius";
+char temp_scale[TEMP_SCALE_SIZE] = DEFAULT_TEMP_SCALE;
 
 // Set the temperature in Celsius or Fahrenheit
 // true - Celsius, false - Fahrenheit
@@ -96,7 +97,7 @@ bool configTempCelsius = true;
 // MD5 of chip ID.  If you only have a handful of Miracle Emitters and use
 // your own MQTT broker (instead of iot.eclips.org) you may want to
 // truncate the MD5 by changing the 32 to a smaller value.
-char machineId[32+1] = "";
+char machineId[MACHINE_ID_SIZE + 1] = "";
 
 //flag for saving data
 bool shouldSaveConfig = false;
@@ -113,678 +114,15 @@ char cmnd_temp_format[16 + sizeof(machineId)];
 
 char stat_temp_coefficient_topic[14 + sizeof(machineId)];
 
-char cmnd_led1_power_topic[49];
-char cmnd_led1_color_topic[49];
-char cmnd_reset_hue_topic[47];
+char cmnd_led1_power_topic[TOPIC_SMALL_SIZE];
+char cmnd_led1_color_topic[TOPIC_SMALL_SIZE];
+char cmnd_reset_hue_topic[TOPIC_SMALL_SIZE];
 
-char stat_led1_power_topic[50];
-char stat_led1_color_topic[50];
+char stat_led1_power_topic[TOPIC_SMALL_SIZE];
+char stat_led1_color_topic[TOPIC_SMALL_SIZE];
 
-// change brightness based on the time of day.
-
-// show colorshift through the phrase mask. for each NeoPixel either show a color or show nothing!
-void applyMask() {
-
-  for (byte i = 0; i < 64; i++) {
-    boolean masker = bitRead(mask, 63 - i); // bitread is backwards because bitRead reads rightmost digits first. could have defined the word masks differently
-    switch (masker) {
-      case 0:
-        matrix.setPixelColor(i, 0, 0, 0);
-        break;
-      case 1:
-        matrix.setPixelColor(i, Wheel(((i * 256 / matrix.numPixels()) + j) & 255));
-        break;
-    }
-  }
-
-  matrix.show(); // show it!
-  delay(SHIFTDELAY);
-  j++; // move the colors forward
-  j = j % (256 * 5);
-
-  // reset mask for next time
-  mask = 0;
-}
-
-// Input a value 0 to 255 to get a color value.
-// The colours are a transition r - g - b - back to r.
-uint32_t Wheel(byte WheelPos) {
-
-  WheelPos = 255 - WheelPos;
-  uint32_t wheelColor;
-
-  if (WheelPos < 85) {
-    wheelColor = matrix.Color(255 - WheelPos * 3, 0, WheelPos * 3);
-  } else if (WheelPos < 170) {
-    WheelPos -= 85;
-    wheelColor = matrix.Color(0, WheelPos * 3, 255 - WheelPos * 3);
-  } else {
-    WheelPos -= 170;
-    wheelColor = matrix.Color(WheelPos * 3, 255 - WheelPos * 3, 0);
-  }
-
-  // convert from 24-bit to 16-bit color - NeoMatrix requires 16-bit. perhaps there's a better way to do this.
-  uint32_t bits = wheelColor;
-  uint32_t blue = bits & 0x001F;     // 5 bits blue
-  uint32_t green = bits & 0x07E0;    // 6 bits green
-  uint32_t red = bits & 0xF800;      // 5 bits red
-
-  // Return shifted bits with alpha set to 0xFF
-  return (red << 8) | (green << 5) | (blue << 3) | 0xFF000000;
-}
-
-
-// Slightly different, this makes the rainbow equally distributed throughout
-void rainbowCycle(uint8_t wait) {
-  
-  uint16_t i, j;
-
-  // Cycly through all colors
-  for (j = 0; j < 256; j++) {
-    for (i = 0; i < matrix.numPixels(); i++) {
-      matrix.setPixelColor(i, Wheel(((i * 256 / matrix.numPixels()) + j) & 255));
-    }
-    matrix.show();
-    delay(wait);
-  }
-}
-
-void adjustBrightness() {
-  
-  //change brightness if it's night time
-  if (theTime.hour() < MORNINGCUTOFF || theTime.hour() > NIGHTCUTOFF) {
-    matrix.setBrightness(NIGHTBRIGHTNESS);
-  } else {
-    matrix.setBrightness(DAYBRIGHTNESS);
-  }
-}
-
-// function to generate the right "phrase" based on the time
-
-void displayTime(void) {
-  
-  // time we display the appropriate theTime.minute() counter
-  if ((theTime.minute() > 4) && (theTime.minute() < 10)) {
-    MFIVE;
-  }
-  if ((theTime.minute() > 9) && (theTime.minute() < 15)) {
-    MTEN;
-  }
-  if ((theTime.minute() > 14) && (theTime.minute() < 20)) {
-    AQUARTER;
-  }
-  if ((theTime.minute() > 19) && (theTime.minute() < 25)) {
-    TWENTY;
-  }
-  if ((theTime.minute() > 24) && (theTime.minute() < 30)) {
-    TWENTY;
-    MFIVE;
-  }
-  if ((theTime.minute() > 29) && (theTime.minute() < 35)) {
-    HALF;
-  }
-  if ((theTime.minute() > 34) && (theTime.minute() < 40)) {
-    TWENTY;
-    MFIVE;
-  }
-  if ((theTime.minute() > 39) && (theTime.minute() < 45)) {
-    TWENTY;
-  }
-  if ((theTime.minute() > 44) && (theTime.minute() < 50)) {
-    AQUARTER;
-  }
-  if ((theTime.minute() > 49) && (theTime.minute() < 55)) {
-    MTEN;
-  }
-  if (theTime.minute() > 54) {
-    MFIVE;
-  }
-
-  if ((theTime.minute() < 5))
-  {
-    switch (theTime.hour()) {
-      case 1:
-      case 13:
-        ONE;
-        break;
-      case 2:
-      case 14:
-        TWO;
-        break;
-      case 3:
-      case 15:
-        THREE;
-        break;
-      case 4:
-      case 16:
-        FOUR;
-        break;
-      case 5:
-      case 17:
-        FIVE;
-        break;
-      case 6:
-      case 18:
-        SIX;
-        break;
-      case 7:
-      case 19:
-        SEVEN;
-        break;
-      case 8:
-      case 20:
-        EIGHT;
-        break;
-      case 9:
-      case 21:
-        NINE;
-        break;
-      case 10:
-      case 22:
-        TEN;
-        break;
-      case 11:
-      case 23:
-        ELEVEN;
-        break;
-      case 0:
-      case 12:
-        TWELVE;
-        break;
-    }
-
-  }
-  else if ((theTime.minute() < 35) && (theTime.minute() > 4))
-  {
-    PAST;
-    Serial.print(" past ");
-    switch (theTime.hour()) {
-      case 1:
-      case 13:
-        ONE;
-        break;
-      case 2:
-      case 14:
-        TWO;
-        break;
-      case 3:
-      case 15:
-        THREE;
-        break;
-      case 4:
-      case 16:
-        FOUR;
-        break;
-      case 5:
-      case 17:
-        FIVE;
-        break;
-      case 6:
-      case 18:
-        SIX;
-        break;
-      case 7:
-      case 19:
-        SEVEN;
-        break;
-      case 8:
-      case 20:
-        EIGHT;
-        break;
-      case 9:
-      case 21:
-        NINE;
-        break;
-      case 10:
-      case 22:
-        TEN;
-        break;
-      case 11:
-      case 23:
-        ELEVEN;
-        break;
-      case 0:
-      case 12:
-        TWELVE;
-        break;
-    }
-  }
-  else
-  {
-    // if we are greater than 34 minutes past the hour then display
-    // the next hour, as we will be displaying a 'to' sign
-    TO;
-    Serial.print(" to ");
-    switch (theTime.hour()) {
-      case 1:
-      case 13:
-        TWO;
-        break;
-      case 14:
-      case 2:
-        THREE;
-        break;
-      case 15:
-      case 3:
-        FOUR;
-        break;
-      case 4:
-      case 16:
-        FIVE;
-        break;
-      case 5:
-      case 17:
-        SIX;
-        break;
-      case 6:
-      case 18:
-        SEVEN;
-        break;
-      case 7:
-      case 19:
-        EIGHT;
-        break;
-      case 8:
-      case 20:
-        NINE;
-        break;
-      case 9:
-      case 21:
-        TEN;
-        break;
-      case 10:
-      case 22:
-        ELEVEN;
-        break;
-      case 11:
-      case 23:
-        TWELVE;
-        break;
-      case 0:
-      case 12:
-        ONE;
-        break;
-    }
-  }
-
-  // Apply phrase mask to colorshift function
-  applyMask();
-
-}
-
-void flashWords(void) {
-
-  ANAVI;
-  applyMask();
-  delay(FLASHDELAY * 2);
-
-  MFIVE;
-  applyMask();
-  delay(FLASHDELAY);
-  
-  MTEN;
-  applyMask();
-  delay(FLASHDELAY);
-
-  AQUARTER;
-  applyMask();
-  delay(FLASHDELAY);
-
-  TWENTY;
-  applyMask();
-  delay(FLASHDELAY);
-
-  HALF;
-  applyMask();
-  delay(FLASHDELAY);
-
-  TO;
-  applyMask();
-  delay(FLASHDELAY);
-
-  PAST;
-  applyMask();
-  delay(FLASHDELAY);
-  
-
-  ONE;
-  applyMask();
-  delay(FLASHDELAY);
-
-  TWO;
-  applyMask();
-  delay(FLASHDELAY);
-  
-  THREE;
-  applyMask();
-  delay(FLASHDELAY);
-  
-  FOUR;
-  applyMask();
-  delay(FLASHDELAY);
-
-  FIVE;
-  applyMask();
-  delay(FLASHDELAY);
-
-  SIX;
-  applyMask();
-  delay(FLASHDELAY);
-
-  SEVEN;
-  applyMask();
-  delay(FLASHDELAY);
-
-  EIGHT;
-  applyMask();
-  delay(FLASHDELAY);
-
-
-  NINE;
-  applyMask();
-  delay(FLASHDELAY);
-
-  TEN;
-  applyMask();
-  delay(FLASHDELAY);
-
-  ELEVEN;
-  applyMask();
-  delay(FLASHDELAY);
-
-  TWELVE;
-  applyMask();
-  delay(FLASHDELAY);
-
-  // blank for a bit
-  applyMask();
-  delay(FLASHDELAY);
-
-}
-
-void waitForFactoryReset()
+void setup()
 {
-    Serial.println("Press button within 4 seconds for factory reset...");
-    for (int iter = 0; iter < 40; iter++)
-    {
-        digitalWrite(pinAlarm, HIGH);
-        delay(50);
-        if (false == digitalRead(pinButton))
-        {
-            factoryReset();
-            return;
-        }
-        digitalWrite(pinAlarm, LOW);
-        delay(50);
-        if (false == digitalRead(pinButton))
-        {
-            factoryReset();
-            return;
-        }
-    }
-}
-
-void factoryReset()
-{
-    if (false == digitalRead(pinButton))
-    {
-        Serial.println("Hold the button to reset to factory defaults...");
-        bool cancel = false;
-        for (int iter=0; iter<30; iter++)
-        {
-            digitalWrite(pinAlarm, HIGH);
-            delay(100);
-            if (true == digitalRead(pinButton))
-            {
-                cancel = true;
-                break;
-            }
-            digitalWrite(pinAlarm, LOW);
-            delay(100);
-            if (true == digitalRead(pinButton))
-            {
-                cancel = true;
-                break;
-            }
-        }
-        if (false == digitalRead(pinButton) && !cancel)
-        {
-            digitalWrite(pinAlarm, HIGH);
-            Serial.println("Disconnecting...");
-            // Disconnect from any previously connected WiFi
-            // true to erase the saved credentials
-            WiFi.disconnect(true);
-
-            Serial.println("Restarting...");
-            // Erase the NVS (Non-Volatile Storage)
-            esp_err_t result = nvs_flash_erase();
-            if (ESP_OK == result)
-            {
-              Serial.println("NVS erased successfully.");
-            } else
-            {
-              Serial.print("Failed to erase NVS. Error code: ");
-              Serial.println(result);
-            }
-            // Restart the board
-            ESP.restart();
-        }
-        else
-        {
-            // Cancel reset to factory defaults
-            Serial.println("Reset to factory defaults cancelled.");
-            digitalWrite(pinAlarm, LOW);
-        }
-    }
-}
-
-void processMessageScale(const char* text)
-{
-    StaticJsonDocument<200> data;
-    deserializeJson(data, text);
-    // Set temperature to Celsius or Fahrenheit and redraw screen
-    Serial.print("Changing the temperature scale to: ");
-    if (data.containsKey("scale") && (0 == strcmp(data["scale"], "celsius")) )
-    {
-        Serial.println("Celsius");
-        configTempCelsius = true;
-        strcpy(temp_scale, "celsius");
-    }
-    else
-    {
-        Serial.println("Fahrenheit");
-        configTempCelsius = false;
-        strcpy(temp_scale, "fahrenheit");
-    }
-    // Save configurations to file
-    saveConfig();
-}
-
-void mqttCallback(char* topic, byte* payload, unsigned int length)
-{
-    // Convert received bytes to a string
-    char text[length + 1];
-    snprintf(text, length + 1, "%s", payload);
-
-    Serial.print("Message arrived [");
-    Serial.print(topic);
-    Serial.print("] ");
-    Serial.println(text);
-
-    if (strcmp(topic, cmnd_temp_format) == 0)
-    {
-        processMessageScale(text);
-    }
-
-#ifdef OTA_UPGRADES
-    if (strcmp(topic, cmnd_update_topic) == 0)
-    {
-        Serial.println("OTA request seen.\n");
-        do_ota_upgrade(text);
-        // Any OTA upgrade will stop the mqtt client, so if the
-        // upgrade failed and we get here publishState() will fail.
-        // Just return here, and we will reconnect from within the
-        // loop().
-        return;
-    }
-#endif
-}
-
-void calculateMachineId()
-{
-    MD5Builder md5;
-    md5.begin();
-    uint64_t chipId = ESP.getEfuseMac();
-    char chipIdStr[13];
-    snprintf(chipIdStr, sizeof(chipIdStr), "%04X%08X", (uint16_t)(chipId >> 32), (uint32_t)chipId);
-    md5.add(chipIdStr);
-    md5.calculate();
-    md5.toString().toCharArray(machineId, sizeof(machineId));
-}
-
-void mqttReconnect()
-{
-  char clientId[18 + sizeof(machineId)];
-  snprintf(clientId, sizeof(clientId), "anavi-miracle-emitter-%s", machineId);
-
-  // Loop until we're reconnected
-  for (int attempt = 0; attempt < 3; ++attempt)
-  {
-      Serial.print("Attempting MQTT connection...");
-      // Attempt to connect
-      if (true == mqttClient.connect(clientId, username, password))
-      {
-          Serial.println("connected");
-
-          // Subscribe to MQTT topics
-
-          // LED1
-          mqttClient.subscribe(cmnd_led1_power_topic);
-          mqttClient.subscribe(cmnd_led1_color_topic);
-          // Topic to reset hue
-          mqttClient.subscribe(cmnd_reset_hue_topic);
-
-          mqttClient.subscribe(line1_topic);
-          mqttClient.subscribe(line2_topic);
-          mqttClient.subscribe(line3_topic);
-          mqttClient.subscribe(cmnd_temp_coefficient_topic);
-          mqttClient.subscribe(cmnd_temp_format);
-  #ifdef OTA_UPGRADES
-          mqttClient.subscribe(cmnd_update_topic);
-  #endif
-
-  #ifdef HOME_ASSISTANT_DISCOVERY
-          // Publish discovery messages
-          publishDiscoveryState();
-  #endif
-
-          // Publish initial status of both LED strips
-          publishState();
-          break;
-
-      }
-      else
-      {
-          Serial.print("failed, rc=");
-          Serial.print(mqttClient.state());
-          Serial.println(" try again in 5 seconds");
-          // Wait 5 seconds before retrying
-          delay(5000);
-      }
-  }
-}
-
-void publishState()
-{
-  //TODO
-}
-
-void publishSensorData(const char* subTopic, const char* key, const float value)
-{
-    StaticJsonDocument<100> json;
-    json[key] = value;
-    char payload[100];
-    serializeJson(json, payload);
-    char topic[200];
-    sprintf(topic,"%s/%s/%s", workgroup, machineId, subTopic);
-    mqttClient.publish(topic, payload, true);
-}
-
-void publishSensorData(const char* subTopic, const char* key, const String& value)
-{
-    StaticJsonDocument<100> json;
-    json[key] = value;
-    char payload[100];
-    serializeJson(json, payload);
-    char topic[200];
-    sprintf(topic,"%s/%s/%s", workgroup, machineId, subTopic);
-    mqttClient.publish(topic, payload, true);
-}
-
-float convertCelsiusToFahrenheit(float temperature)
-{
-    return (temperature * 9/5 + 32);
-}
-
-float convertTemperature(float temperature)
-{
-    return (true == configTempCelsius) ? temperature : convertCelsiusToFahrenheit(temperature);
-}
-
-String formatTemperature(float temperature)
-{
-    String unit = (true == configTempCelsius) ? "°C" : "°F";
-    return String(convertTemperature(temperature), 1) + unit;
-}
-
-//callback notifying us of the need to save config
-void saveConfigCallback ()
-{
-    Serial.println("Should save config");
-    shouldSaveConfig = true;
-}
-
-void apWiFiCallback(WiFiManager *myWiFiManager)
-{
-    String configPortalSSID = myWiFiManager->getConfigPortalSSID();
-    // Print information in the serial output
-    Serial.print("Created access point for configuration: ");
-    Serial.println(configPortalSSID);
-}
-
-void saveConfig()
-{
-    Serial.println("saving config");
-    DynamicJsonDocument json(1024);
-    json["mqtt_server"] = mqtt_server;
-    json["mqtt_port"] = mqtt_port;
-    json["workgroup"] = workgroup;
-    json["username"] = username;
-    json["password"] = password;
-    json["led_type"] = ledType;
-    json["led_color_order"] = ledColorOrder;
-    json["temp_scale"] = temp_scale;
-#ifdef HOME_ASSISTANT_DISCOVERY
-    json["ha_name"] = ha_name;
-#endif
-#ifdef OTA_UPGRADES
-    json["ota_server"] = ota_server;
-#endif
-
-    File configFile = SPIFFS.open("/config.json", "w");
-    if (!configFile)
-    {
-        Serial.println("failed to open config file for writing");
-    }
-
-    serializeJson(json, Serial);
-    Serial.println("");
-    serializeJson(json, configFile);
-    configFile.close();
-    //end save
-}
-
-void setup() {
   // put your setup code here, to run once:
 
   // set pinmodes
@@ -833,7 +171,8 @@ void setup() {
   if (SPIFFS.begin(true))
   {
       Serial.println("mounted file system");
-      if (SPIFFS.exists("/config.json")) {
+      if (SPIFFS.exists("/config.json"))
+      {
           //file exists, reading and loading
           Serial.println("reading config file");
           File configFile = SPIFFS.open("/config.json", "r");
@@ -845,7 +184,7 @@ void setup() {
               std::unique_ptr<char[]> buf(new char[size]);
 
               configFile.readBytes(buf.get(), size);
-              DynamicJsonDocument json(1024);
+              DynamicJsonDocument json(JSON_CONFIG_SIZE);
               if (DeserializationError::Ok == deserializeJson(json, buf.get()))
               {
   #ifdef DEBUG
@@ -915,8 +254,8 @@ void setup() {
   WiFiManagerParameter custom_workgroup("workgroup", "workgroup", workgroup, sizeof(workgroup));
   WiFiManagerParameter custom_mqtt_user("user", "MQTT username", username, sizeof(username));
   WiFiManagerParameter custom_mqtt_pass("pass", "MQTT password", password, sizeof(password));
-  WiFiManagerParameter custom_led_type("ledType", "WS2812B", ledType, sizeof(ledType));
-  WiFiManagerParameter custom_led_color_order("ledColorOrder", "GRB", ledColorOrder, sizeof(ledColorOrder));
+  WiFiManagerParameter custom_led_type("ledType", DEFAULT_LED_TYPE, ledType, sizeof(ledType));
+  WiFiManagerParameter custom_led_color_order("ledColorOrder", DEFAULT_LED_COLOR_ORDER, ledColorOrder, sizeof(ledColorOrder));
   WiFiManagerParameter custom_led1("led1", "LED", configLed1, sizeof(configLed1));
   #ifdef HOME_ASSISTANT_DISCOVERY
     WiFiManagerParameter custom_mqtt_ha_name("ha_name", "Device name for Home Assistant", ha_name, sizeof(ha_name));
@@ -926,7 +265,7 @@ void setup() {
   #endif
   WiFiManagerParameter custom_temperature_scale("temp_scale", "Temperature scale", temp_scale, sizeof(temp_scale));
 
-  char htmlMachineId[200];
+  char htmlMachineId[TOPIC_BUFFER_SIZE];
   sprintf(htmlMachineId,"<p style=\"color: red;\">Machine ID:</p><p><b>%s</b></p><p>Copy and save the machine ID because you will need it to control the device.</p>", machineId);
   WiFiManagerParameter custom_text_machine_id(htmlMachineId);
 
@@ -958,7 +297,7 @@ void setup() {
   //sets timeout until configuration portal gets turned off
   //useful to make it all retry or go to sleep
   //in seconds
-  wifiManager.setTimeout(300);
+  wifiManager.setTimeout(WIFI_CONFIG_TIMEOUT);
 
   digitalWrite(pinAlarm, HIGH);
 
@@ -972,7 +311,7 @@ void setup() {
   // Append the last 5 character of the machine id to the access point name
   String apId(machineId);
   apId = apId.substring(apId.length() - 5);
-  String accessPointName = "ANAVI Miracle Emitter " + apId;
+  String accessPointName = String(WIFI_AP_NAME_PREFIX) + apId;
   if (!wifiManager.autoConnect(accessPointName.c_str(), ""))
   {
     digitalWrite(pinAlarm, LOW);
@@ -1029,7 +368,7 @@ void setup() {
   Serial.print("MQTT Username: ");
   Serial.println(username);
   // Hide password from the log and show * instead
-  char hiddenpass[20] = "";
+  char hiddenpass[PASSWORD_SIZE] = "";
   for (size_t charP=0; charP < strlen(password); charP++)
   {
       hiddenpass[charP] = '*';
@@ -1037,7 +376,7 @@ void setup() {
   hiddenpass[strlen(password)] = '\0';
   Serial.print("MQTT Password: ");
   Serial.println(hiddenpass);
-      Serial.print("Saved temperature scale: ");
+  Serial.print("Saved temperature scale: ");
   Serial.println(temp_scale);
   configTempCelsius = String(temp_scale).equalsIgnoreCase("celsius");
   Serial.print("Temperature scale: ");
@@ -1088,7 +427,8 @@ void setup() {
 
 }
 
-void loop() {
+void loop()
+{
 
   timeClient.update();
   
@@ -1099,5 +439,3 @@ void loop() {
   displayTime();
   delay(5);
 }
-
-
