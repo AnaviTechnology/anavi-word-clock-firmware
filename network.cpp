@@ -424,7 +424,7 @@ void NetworkConnector::calculateMachineId()
 void NetworkConnector::mqttReconnect()
 {
     char clientId[51];
-    snprintf(clientId, sizeof(clientId), "anavi-miracle-emitter-%s", machineId);
+    snprintf(clientId, sizeof(clientId), "anavi-word-clock-%s", machineId);
     for (int attempt = 0; attempt < MQTT_RECONNECT_ATTEMPTS; ++attempt)
     {
         Serial.print("Attempting MQTT connection...");

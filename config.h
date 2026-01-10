@@ -53,7 +53,7 @@ const char rulesDST[] = "US"; // US DST rules
 // WIFI CONFIGURATION
 // ============================================================================
 #define WIFI_CONFIG_TIMEOUT 300  // seconds
-#define WIFI_AP_NAME_PREFIX "ANAVI Miracle Emitter "
+#define WIFI_AP_NAME_PREFIX "ANAVI Word Clock "
 
 // ============================================================================
 // MQTT RECONNECTION SETTINGS
