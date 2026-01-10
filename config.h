@@ -17,49 +17,6 @@ const int pinButton = D8;
 const int pinExtra = D2;
 
 // ============================================================================
-// BRIGHTNESS SETTINGS
-// ============================================================================
-#define DAYBRIGHTNESS 40
-#define NIGHTBRIGHTNESS 20
-
-// Cutoff times for day / night brightness
-#define MORNINGCUTOFF 7   // when does daybrightness begin? 7am
-#define NIGHTCUTOFF   22  // when does nightbrightness begin? 10pm
-
-// ============================================================================
-// TIMING DELAYS
-// ============================================================================
-#define FLASHDELAY 100   // delay for startup "flashWords" sequence
-#define SHIFTDELAY 100   // controls color shifting speed
-
-// ============================================================================
-// WORD MASK DEFINITIONS (64-bit masks for 8x8 matrix)
-// ============================================================================
-// These are in hexadecimal, 00 for an empty row
-#define MFIVE    mask |= 0xF0000000000
-#define MTEN     mask |= 0x1A00000000000000
-#define AQUARTER mask |= 0x1FE000000000000
-#define TWENTY   mask |= 0x7E00000000000000
-#define HALF     mask |= 0xF00000000000
-#define PAST     mask |= 0x7800000000
-#define TO       mask |= 0xC00000000
-#define ONE      mask |= 0x43
-#define TWO      mask |= 0x340
-#define THREE    mask |= 0x1F0000
-#define FOUR     mask |= 0xF0
-#define FIVE     mask |= 0xF000000
-#define SIX      mask |= 0xE00000
-#define SEVEN    mask |= 0x80F000
-#define EIGHT    mask |= 0xF8000000
-#define NINE     mask |= 0xF
-#define TEN      mask |= 0x80018000
-#define ELEVEN   mask |= 0xFC00
-#define TWELVE   mask |= 0x6F00
-#define ANAVI    mask |= 0x1100200000002004
-#define WIFI     mask |= 0x400020003000000
-#define HA       mask |= 0x300000000000
-
-// ============================================================================
 // NTP CONFIGURATION
 // ============================================================================
 const char NTP_SERVER[] = "pool.ntp.org";

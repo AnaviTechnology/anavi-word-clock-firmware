@@ -55,19 +55,10 @@
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, NTP_SERVER, NTP_OFFSET);
 
-// 64-bit "mask" for each pixel in the matrix- is it on or off?
-uint64_t mask;
-
 DateTime theTime; // Holds current clock time
 
-// an integer for the color shifting effect
-int j;
-
-// configure for 8x8 neopixel matrix
-Adafruit_NeoMatrix matrix = Adafruit_NeoMatrix(8, 8, NEOPIN,
-                            NEO_MATRIX_TOP  + NEO_MATRIX_LEFT +
-                            NEO_MATRIX_ROWS + NEO_MATRIX_ZIGZAG,
-                            NEO_GRB         + NEO_KHZ800);
+// Create WordClock instance
+WordClock wordClock;
 
 //define your default values here, if there are different values in config.json, they are overwritten.
 char mqtt_server[MQTT_SERVER_SIZE] = DEFAULT_MQTT_SERVER;
@@ -139,20 +130,19 @@ void setup()
   Serial.begin(115200);
   Serial.println();
 
-  matrix.begin();
-  matrix.setBrightness(DAYBRIGHTNESS);
-  // Initialize all pixels to 'off'
-  matrix.fillScreen(0); 
-  matrix.show();
+  // Initialize the word clock
+  wordClock.begin();
 
-  // Startup
-  rainbowCycle(5);
+  // Startup animations
+  wordClock.rainbowCycle(5);
   delay(100);
-  flashWords();
+  wordClock.flashWords();
   delay(100);
 
   // Power-up safety delay and a chance for resetting the board
   waitForFactoryReset();
+
+  wordClock.showStatusWiFi();
 
   // Machine ID
   calculateMachineId();
@@ -301,9 +291,6 @@ void setup()
 
   digitalWrite(pinAlarm, HIGH);
 
-  WIFI;
-  applyMask();
-
   //fetches ssid and pass and tries to connect
   //if it does not connect it starts an access point
   //and goes into a blocking loop awaiting configuration
@@ -356,8 +343,7 @@ void setup()
   timeClient.begin();
   timeClient.update();
 
-  HA;
-  applyMask();
+  wordClock.showStatusHomeAssistant();
 
   // MQTT
   Serial.print("MQTT Server: ");
@@ -435,7 +421,7 @@ void loop()
   unsigned long epochTime = timeClient.getEpochTime();
   theTime = DateTime(epochTime);
 
-  adjustBrightness();
-  displayTime();
+  wordClock.adjustBrightness(theTime);
+  wordClock.displayTime(theTime);
   delay(5);
 }
