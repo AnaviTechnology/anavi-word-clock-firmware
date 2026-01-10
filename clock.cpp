@@ -211,7 +211,6 @@ void displayTime(void)
   else if ((theTime.minute() < 35) && (theTime.minute() > 4))
   {
     PAST;
-    Serial.print(" past ");
     switch (theTime.hour())
     {
       case 1:
@@ -269,7 +268,6 @@ void displayTime(void)
     // if we are greater than 34 minutes past the hour then display
     // the next hour, as we will be displaying a 'to' sign
     TO;
-    Serial.print(" to ");
     switch (theTime.hour())
     {
       case 1:
