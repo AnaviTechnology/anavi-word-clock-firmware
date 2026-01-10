@@ -1,6 +1,6 @@
 /*
   ANAVI Word Clock - Network Functions Implementation
-  Functions for WiFi, MQTT, Home Assistant and Configurations
+  NetworkConnector class for WiFi, MQTT, Home Assistant and Configurations
 */
 
 #include "network.h"
@@ -12,7 +12,247 @@
 #include <SPIFFS.h>
 #include <Arduino.h>
 
-void waitForFactoryReset()
+// Initialize static instance pointer
+NetworkConnector* NetworkConnector::instance = nullptr;
+
+NetworkConnector::NetworkConnector()
+    : timeClient(ntpUDP, NTP_SERVER, NTP_OFFSET)
+    , mqttClient(espClient)
+    , configTempCelsius(true)
+    , shouldSaveConfig(false)
+{
+    // Initialize configuration with defaults
+    strcpy(mqtt_server, DEFAULT_MQTT_SERVER);
+    strcpy(mqtt_port, DEFAULT_MQTT_PORT);
+    strcpy(workgroup, DEFAULT_WORKGROUP);
+    username[0] = '\0';
+    password[0] = '\0';
+    strcpy(configLed1, DEFAULT_LED_COUNT);
+    strcpy(ledType, DEFAULT_LED_TYPE);
+    strcpy(ledColorOrder, DEFAULT_LED_COLOR_ORDER);
+    strcpy(temp_scale, DEFAULT_TEMP_SCALE);
+    machineId[0] = '\0';
+
+    #ifdef HOME_ASSISTANT_DISCOVERY
+    ha_name[0] = '\0';
+    #endif
+
+    #ifdef OTA_UPGRADES
+    ota_server[0] = '\0';
+    #endif
+
+    // Set static instance for callbacks
+    instance = this;
+}
+
+void NetworkConnector::begin()
+{
+    // Calculate machine ID first
+    calculateMachineId();
+
+    // Set MQTT topics
+    sprintf(cmnd_led1_power_topic, "cmnd/%s/power", machineId);
+    sprintf(cmnd_led1_color_topic, "cmnd/%s/color", machineId);
+    sprintf(cmnd_reset_hue_topic, "cmnd/%s/resethue", machineId);
+    sprintf(stat_led1_power_topic, "stat/%s/power", machineId);
+    sprintf(stat_led1_color_topic, "stat/%s/color", machineId);
+    sprintf(line1_topic, "cmnd/%s/line1", machineId);
+    sprintf(line2_topic, "cmnd/%s/line2", machineId);
+    sprintf(line3_topic, "cmnd/%s/line3", machineId);
+    sprintf(cmnd_temp_coefficient_topic, "cmnd/%s/tempcoef", machineId);
+    sprintf(stat_temp_coefficient_topic, "stat/%s/tempcoef", machineId);
+    sprintf(cmnd_temp_format, "cmnd/%s/tempformat", machineId);
+
+    #ifdef OTA_UPGRADES
+    sprintf(cmnd_update_topic, "cmnd/%s/update", machineId);
+    #endif
+
+    // Load configuration from file system
+    loadConfig();
+
+    // Wait for factory reset option
+    waitForFactoryReset();
+}
+
+void NetworkConnector::setupWiFi()
+{
+    // WiFiManager parameters
+    WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqtt_server, sizeof(mqtt_server));
+    WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_port, sizeof(mqtt_port));
+    WiFiManagerParameter custom_workgroup("workgroup", "workgroup", workgroup, sizeof(workgroup));
+    WiFiManagerParameter custom_mqtt_user("user", "MQTT username", username, sizeof(username));
+    WiFiManagerParameter custom_mqtt_pass("pass", "MQTT password", password, sizeof(password));
+    WiFiManagerParameter custom_led_type("ledType", DEFAULT_LED_TYPE, ledType, sizeof(ledType));
+    WiFiManagerParameter custom_led_color_order("ledColorOrder", DEFAULT_LED_COLOR_ORDER, ledColorOrder, sizeof(ledColorOrder));
+    WiFiManagerParameter custom_led1("led1", "LED", configLed1, sizeof(configLed1));
+    WiFiManagerParameter custom_temperature_scale("temp_scale", "Temperature scale", temp_scale, sizeof(temp_scale));
+
+    #ifdef HOME_ASSISTANT_DISCOVERY
+    WiFiManagerParameter custom_mqtt_ha_name("ha_name", "Device name for Home Assistant", ha_name, sizeof(ha_name));
+    #endif
+
+    #ifdef OTA_UPGRADES
+    WiFiManagerParameter custom_ota_server("ota_server", "OTA server", ota_server, sizeof(ota_server));
+    #endif
+
+    char htmlMachineId[200];
+    sprintf(htmlMachineId,"<p style=\"color: red;\">Machine ID:</p><p><b>%s</b></p><p>Copy and save the machine ID because you will need it to control the device.</p>", machineId);
+    WiFiManagerParameter custom_text_machine_id(htmlMachineId);
+
+    // WiFiManager setup
+    WiFiManager wifiManager;
+    wifiManager.setSaveConfigCallback(saveConfigCallbackWrapper);
+
+    // Add all parameters
+    wifiManager.addParameter(&custom_mqtt_server);
+    wifiManager.addParameter(&custom_mqtt_port);
+    wifiManager.addParameter(&custom_workgroup);
+    wifiManager.addParameter(&custom_mqtt_user);
+    wifiManager.addParameter(&custom_mqtt_pass);
+    wifiManager.addParameter(&custom_led_type);
+    wifiManager.addParameter(&custom_led_color_order);
+    wifiManager.addParameter(&custom_led1);
+    wifiManager.addParameter(&custom_temperature_scale);
+
+    #ifdef HOME_ASSISTANT_DISCOVERY
+    wifiManager.addParameter(&custom_mqtt_ha_name);
+    #endif
+
+    #ifdef OTA_UPGRADES
+    wifiManager.addParameter(&custom_ota_server);
+    #endif
+
+    wifiManager.addParameter(&custom_text_machine_id);
+
+    wifiManager.setTimeout(WIFI_CONFIG_TIMEOUT);
+    wifiManager.setAPCallback(apWiFiCallbackWrapper);
+
+    digitalWrite(pinAlarm, HIGH);
+
+    // Create access point name
+    String apId(machineId);
+    apId = apId.substring(apId.length() - 5);
+    String accessPointName = String(WIFI_AP_NAME_PREFIX) + apId;
+
+    if (!wifiManager.autoConnect(accessPointName.c_str(), ""))
+    {
+        digitalWrite(pinAlarm, LOW);
+        Serial.println("failed to connect and hit timeout");
+        delay(3000);
+    }
+
+    Serial.println("connected!)");
+    digitalWrite(pinAlarm, LOW);
+
+    // Read updated parameters
+    strcpy(mqtt_server, custom_mqtt_server.getValue());
+    strcpy(mqtt_port, custom_mqtt_port.getValue());
+    strcpy(workgroup, custom_workgroup.getValue());
+    strcpy(username, custom_mqtt_user.getValue());
+    strcpy(password, custom_mqtt_pass.getValue());
+    strcpy(ledType, custom_led_type.getValue());
+    strcpy(ledColorOrder, custom_led_color_order.getValue());
+
+    int saveLed1 = atoi(custom_led1.getValue());
+    if (saveLed1 <= 0)
+    {
+        saveLed1 = 10;
+    }
+
+    strcpy(temp_scale, custom_temperature_scale.getValue());
+
+    #ifdef HOME_ASSISTANT_DISCOVERY
+    strcpy(ha_name, custom_mqtt_ha_name.getValue());
+    #endif
+
+    #ifdef OTA_UPGRADES
+    strcpy(ota_server, custom_ota_server.getValue());
+    #endif
+
+    // Save config if needed
+    if (shouldSaveConfig)
+    {
+        saveConfig();
+    }
+
+    Serial.println("local ip");
+    Serial.println(WiFi.localIP());
+
+    // Start NTP client
+    timeClient.begin();
+    timeClient.update();
+}
+
+void NetworkConnector::setupMQTT()
+{
+    const int mqttPort = atoi(mqtt_port);
+    mqttClient.setServer(mqtt_server, mqttPort);
+    mqttClient.setCallback(mqttCallbackWrapper);
+    mqttReconnect();
+}
+
+void NetworkConnector::printConfiguration()
+{
+    Serial.println("");
+    Serial.println("-----");
+    Serial.print("Machine ID: ");
+    Serial.println(machineId);
+    Serial.println("-----");
+
+    Serial.print("MQTT Server: ");
+    Serial.println(mqtt_server);
+    Serial.print("MQTT Port: ");
+    Serial.println(mqtt_port);
+    Serial.print("MQTT Username: ");
+    Serial.println(username);
+
+    // Hide password
+    char hiddenpass[20] = "";
+    for (size_t charP=0; charP < strlen(password); charP++)
+    {
+        hiddenpass[charP] = '*';
+    }
+    hiddenpass[strlen(password)] = '\0';
+    Serial.print("MQTT Password: ");
+    Serial.println(hiddenpass);
+
+    Serial.print("Saved temperature scale: ");
+    Serial.println(temp_scale);
+    configTempCelsius = String(temp_scale).equalsIgnoreCase("celsius");
+    Serial.print("Temperature scale: ");
+    Serial.println(configTempCelsius ? "Celsius" : "Fahrenheit");
+
+    #ifdef HOME_ASSISTANT_DISCOVERY
+    Serial.print("Home Assistant device name: ");
+    Serial.println(ha_name);
+    #endif
+
+    #ifdef OTA_UPGRADES
+    if (ota_server[0] != '\0')
+    {
+        Serial.print("OTA server: ");
+        Serial.println(ota_server);
+    }
+    #ifdef OTA_SERVER
+    Serial.print("Hardcoded OTA server: ");
+    Serial.println(OTA_SERVER);
+    #endif
+    #endif
+
+    Serial.println("");
+}
+
+void NetworkConnector::updateTime()
+{
+    timeClient.update();
+}
+
+unsigned long NetworkConnector::getEpochTime()
+{
+    return timeClient.getEpochTime();
+}
+
+void NetworkConnector::waitForFactoryReset()
 {
     Serial.println("Press button within 4 seconds for factory reset...");
     for (int iter = 0; iter < FACTORY_RESET_WAIT_ITERATIONS; iter++)
@@ -34,7 +274,7 @@ void waitForFactoryReset()
     }
 }
 
-void factoryReset()
+void NetworkConnector::factoryReset()
 {
     if (false == digitalRead(pinButton))
     {
@@ -61,39 +301,33 @@ void factoryReset()
         {
             digitalWrite(pinAlarm, HIGH);
             Serial.println("Disconnecting...");
-            // Disconnect from any previously connected WiFi
-            // true to erase the saved credentials
             WiFi.disconnect(true);
 
             Serial.println("Restarting...");
-            // Erase the NVS (Non-Volatile Storage)
             esp_err_t result = nvs_flash_erase();
             if (ESP_OK == result)
             {
-              Serial.println("NVS erased successfully.");
+                Serial.println("NVS erased successfully.");
             }
             else
             {
-              Serial.print("Failed to erase NVS. Error code: ");
-              Serial.println(result);
+                Serial.print("Failed to erase NVS. Error code: ");
+                Serial.println(result);
             }
-            // Restart the board
             ESP.restart();
         }
         else
         {
-            // Cancel reset to factory defaults
             Serial.println("Reset to factory defaults cancelled.");
             digitalWrite(pinAlarm, LOW);
         }
     }
 }
 
-void processMessageScale(const char* text)
+void NetworkConnector::processMessageScale(const char* text)
 {
     StaticJsonDocument<JSON_SCALE_SIZE> data;
     deserializeJson(data, text);
-    // Set temperature to Celsius or Fahrenheit and redraw screen
     Serial.print("Changing the temperature scale to: ");
     if (data.containsKey("scale") && (0 == strcmp(data["scale"], "celsius")) )
     {
@@ -107,13 +341,11 @@ void processMessageScale(const char* text)
         configTempCelsius = false;
         strcpy(temp_scale, "fahrenheit");
     }
-    // Save configurations to file
     saveConfig();
 }
 
-void mqttCallback(char* topic, byte* payload, unsigned int length)
+void NetworkConnector::mqttCallback(char* topic, byte* payload, unsigned int length)
 {
-    // Convert received bytes to a string
     char text[length + 1];
     snprintf(text, length + 1, "%s", payload);
 
@@ -127,21 +359,25 @@ void mqttCallback(char* topic, byte* payload, unsigned int length)
         processMessageScale(text);
     }
 
-#ifdef OTA_UPGRADES
+    #ifdef OTA_UPGRADES
     if (strcmp(topic, cmnd_update_topic) == 0)
     {
         Serial.println("OTA request seen.\n");
         do_ota_upgrade(text);
-        // Any OTA upgrade will stop the mqtt client, so if the
-        // upgrade failed and we get here publishState() will fail.
-        // Just return here, and we will reconnect from within the
-        // loop().
         return;
     }
-#endif
+    #endif
 }
 
-void calculateMachineId()
+void NetworkConnector::mqttCallbackWrapper(char* topic, byte* payload, unsigned int length)
+{
+    if (instance)
+    {
+        instance->mqttCallback(topic, payload, length);
+    }
+}
+
+void NetworkConnector::calculateMachineId()
 {
     MD5Builder md5;
     md5.begin();
@@ -150,67 +386,58 @@ void calculateMachineId()
     snprintf(chipIdStr, sizeof(chipIdStr), "%04X%08X", (uint16_t)(chipId >> 32), (uint32_t)chipId);
     md5.add(chipIdStr);
     md5.calculate();
-    md5.toString().toCharArray(machineId, MACHINE_ID_SIZE + 1);
+    md5.toString().toCharArray(machineId, 33);
 }
 
-void mqttReconnect()
+void NetworkConnector::mqttReconnect()
 {
-  char clientId[18 + MACHINE_ID_SIZE + 1];
-  snprintf(clientId, sizeof(clientId), "anavi-miracle-emitter-%s", machineId);
+    char clientId[51];
+    snprintf(clientId, sizeof(clientId), "anavi-miracle-emitter-%s", machineId);
 
-  // Loop until we're reconnected
-  for (int attempt = 0; attempt < MQTT_RECONNECT_ATTEMPTS; ++attempt)
-  {
-      Serial.print("Attempting MQTT connection...");
-      // Attempt to connect
-      if (true == mqttClient.connect(clientId, username, password))
-      {
-          Serial.println("connected");
+    for (int attempt = 0; attempt < MQTT_RECONNECT_ATTEMPTS; ++attempt)
+    {
+        Serial.print("Attempting MQTT connection...");
+        if (true == mqttClient.connect(clientId, username, password))
+        {
+            Serial.println("connected");
 
-          // Subscribe to MQTT topics
+            // Subscribe to topics
+            mqttClient.subscribe(cmnd_led1_power_topic);
+            mqttClient.subscribe(cmnd_led1_color_topic);
+            mqttClient.subscribe(cmnd_reset_hue_topic);
+            mqttClient.subscribe(line1_topic);
+            mqttClient.subscribe(line2_topic);
+            mqttClient.subscribe(line3_topic);
+            mqttClient.subscribe(cmnd_temp_coefficient_topic);
+            mqttClient.subscribe(cmnd_temp_format);
 
-          // LED1
-          mqttClient.subscribe(cmnd_led1_power_topic);
-          mqttClient.subscribe(cmnd_led1_color_topic);
-          // Topic to reset hue
-          mqttClient.subscribe(cmnd_reset_hue_topic);
+            #ifdef OTA_UPGRADES
+            mqttClient.subscribe(cmnd_update_topic);
+            #endif
 
-          mqttClient.subscribe(line1_topic);
-          mqttClient.subscribe(line2_topic);
-          mqttClient.subscribe(line3_topic);
-          mqttClient.subscribe(cmnd_temp_coefficient_topic);
-          mqttClient.subscribe(cmnd_temp_format);
-  #ifdef OTA_UPGRADES
-          mqttClient.subscribe(cmnd_update_topic);
-  #endif
+            #ifdef HOME_ASSISTANT_DISCOVERY
+            publishDiscoveryState();
+            #endif
 
-  #ifdef HOME_ASSISTANT_DISCOVERY
-          // Publish discovery messages
-          publishDiscoveryState();
-  #endif
-
-          // Publish initial status of both LED strips
-          publishState();
-          break;
-
-      }
-      else
-      {
-          Serial.print("failed, rc=");
-          Serial.print(mqttClient.state());
-          Serial.println(" try again in 5 seconds");
-          // Wait 5 seconds before retrying
-          delay(MQTT_RECONNECT_DELAY);
-      }
-  }
+            publishState();
+            break;
+        }
+        else
+        {
+            Serial.print("failed, rc=");
+            Serial.print(mqttClient.state());
+            Serial.println(" try again in 5 seconds");
+            delay(MQTT_RECONNECT_DELAY);
+        }
+    }
 }
 
-void publishState()
+void NetworkConnector::publishState()
 {
-  //TODO
+    //TODO
 }
 
-void publishSensorData(const char* subTopic, const char* key, const float value)
+void NetworkConnector::publishSensorData(const char* subTopic, const char* key, const float value)
 {
     StaticJsonDocument<JSON_SMALL_SIZE> json;
     json[key] = value;
@@ -221,7 +448,7 @@ void publishSensorData(const char* subTopic, const char* key, const float value)
     mqttClient.publish(topic, payload, true);
 }
 
-void publishSensorData(const char* subTopic, const char* key, const String& value)
+void NetworkConnector::publishSensorData(const char* subTopic, const char* key, const String& value)
 {
     StaticJsonDocument<JSON_SMALL_SIZE> json;
     json[key] = value;
@@ -232,38 +459,112 @@ void publishSensorData(const char* subTopic, const char* key, const String& valu
     mqttClient.publish(topic, payload, true);
 }
 
-float convertCelsiusToFahrenheit(float temperature)
+float NetworkConnector::convertCelsiusToFahrenheit(float temperature)
 {
     return (temperature * 9/5 + 32);
 }
 
-float convertTemperature(float temperature)
+float NetworkConnector::convertTemperature(float temperature)
 {
     return (true == configTempCelsius) ? temperature : convertCelsiusToFahrenheit(temperature);
 }
 
-String formatTemperature(float temperature)
+String NetworkConnector::formatTemperature(float temperature)
 {
     String unit = (true == configTempCelsius) ? "°C" : "°F";
     return String(convertTemperature(temperature), 1) + unit;
 }
 
-//callback notifying us of the need to save config
-void saveConfigCallback ()
+void NetworkConnector::saveConfigCallback()
 {
     Serial.println("Should save config");
     shouldSaveConfig = true;
 }
 
-void apWiFiCallback(WiFiManager *myWiFiManager)
+void NetworkConnector::saveConfigCallbackWrapper()
+{
+    if (instance)
+    {
+        instance->saveConfigCallback();
+    }
+}
+
+void NetworkConnector::apWiFiCallback(WiFiManager *myWiFiManager)
 {
     String configPortalSSID = myWiFiManager->getConfigPortalSSID();
-    // Print information in the serial output
     Serial.print("Created access point for configuration: ");
     Serial.println(configPortalSSID);
 }
 
-void saveConfig()
+void NetworkConnector::apWiFiCallbackWrapper(WiFiManager *myWiFiManager)
+{
+    if (instance)
+    {
+        instance->apWiFiCallback(myWiFiManager);
+    }
+}
+
+void NetworkConnector::loadConfig()
+{
+    Serial.println("mounting FS...");
+
+    if (SPIFFS.begin(true))
+    {
+        Serial.println("mounted file system");
+        if (SPIFFS.exists("/config.json"))
+        {
+            Serial.println("reading config file");
+            File configFile = SPIFFS.open("/config.json", "r");
+            if (configFile)
+            {
+                Serial.println("opened config file");
+                const size_t size = configFile.size();
+                std::unique_ptr<char[]> buf(new char[size]);
+
+                configFile.readBytes(buf.get(), size);
+                DynamicJsonDocument json(JSON_CONFIG_SIZE);
+                if (DeserializationError::Ok == deserializeJson(json, buf.get()))
+                {
+                    #ifdef DEBUG
+                    serializeJson(json, Serial);
+                    Serial.println("\nparsed json");
+                    #endif
+
+                    strcpy(mqtt_server, json["mqtt_server"]);
+                    strcpy(mqtt_port, json["mqtt_port"]);
+                    strcpy(workgroup, json["workgroup"]);
+                    strcpy(username, json["username"]);
+                    strcpy(password, json["password"]);
+                    strcpy(ledType, json["led_type"]);
+                    strcpy(ledColorOrder, json["led_color_order"]);
+                    strcpy(temp_scale, json["temp_scale"]);
+
+                    #ifdef HOME_ASSISTANT_DISCOVERY
+                    const char *s = json["ha_name"];
+                    if (!s) s = machineId;
+                    snprintf(ha_name, sizeof(ha_name), "%s", s);
+                    #endif
+
+                    #ifdef OTA_UPGRADES
+                    const char *s2 = json["ota_server"];
+                    if (!s2) s2 = "";
+                    snprintf(ota_server, sizeof(ota_server), "%s", s2);
+                    #endif
+                }
+                else
+                {
+                    Serial.println("failed to load json config");
+                }
+            }
+        }
+    }
+    else
+    {
+        Serial.println("failed to mount FS");
+    }
+}
+
+void NetworkConnector::saveConfig()
 {
     Serial.println("saving config");
     DynamicJsonDocument json(JSON_CONFIG_SIZE);
@@ -275,12 +576,14 @@ void saveConfig()
     json["led_type"] = ledType;
     json["led_color_order"] = ledColorOrder;
     json["temp_scale"] = temp_scale;
-#ifdef HOME_ASSISTANT_DISCOVERY
+
+    #ifdef HOME_ASSISTANT_DISCOVERY
     json["ha_name"] = ha_name;
-#endif
-#ifdef OTA_UPGRADES
+    #endif
+
+    #ifdef OTA_UPGRADES
     json["ota_server"] = ota_server;
-#endif
+    #endif
 
     File configFile = SPIFFS.open("/config.json", "w");
     if (!configFile)
@@ -292,5 +595,18 @@ void saveConfig()
     Serial.println("");
     serializeJson(json, configFile);
     configFile.close();
-    //end save
 }
+
+#ifdef HOME_ASSISTANT_DISCOVERY
+void NetworkConnector::publishDiscoveryState()
+{
+    // TODO: Implement Home Assistant discovery
+}
+#endif
+
+#ifdef OTA_UPGRADES
+void NetworkConnector::do_ota_upgrade(const char* text)
+{
+    // TODO: Implement OTA upgrade
+}
+#endif

@@ -38,26 +38,6 @@ const char rulesDST[] = "US"; // US DST rules
 #define DEFAULT_WORKGROUP "workgroup"
 
 // ============================================================================
-// BUFFER SIZES
-// ============================================================================
-#define MQTT_SERVER_SIZE 40
-#define MQTT_PORT_SIZE 6
-#define WORKGROUP_SIZE 32
-#define USERNAME_SIZE 20
-#define PASSWORD_SIZE 20
-#define LED_CONFIG_SIZE 20
-#define MACHINE_ID_SIZE 32
-#define TEMP_SCALE_SIZE 40
-
-#ifdef HOME_ASSISTANT_DISCOVERY
-  #define HA_NAME_SIZE 32
-#endif
-
-#ifdef OTA_UPGRADES
-  #define OTA_SERVER_SIZE 40
-#endif
-
-// ============================================================================
 // DEFAULT LED CONFIGURATION
 // ============================================================================
 #define DEFAULT_LED_COUNT "10"
