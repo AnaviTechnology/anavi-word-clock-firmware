@@ -25,9 +25,6 @@ NetworkConnector::NetworkConnector()
     strcpy(workgroup, DEFAULT_WORKGROUP);
     username[0] = '\0';
     password[0] = '\0';
-    strcpy(configLed1, DEFAULT_LED_COUNT);
-    strcpy(ledType, DEFAULT_LED_TYPE);
-    strcpy(ledColorOrder, DEFAULT_LED_COLOR_ORDER);
     strcpy(temp_scale, DEFAULT_TEMP_SCALE);
     strcpy(timezone, "+2");  // Default UTC+2 for Bulgaria
     machineId[0] = '\0';
@@ -133,17 +130,17 @@ const char* NetworkConnector::buildTimezoneDropdown()
 void NetworkConnector::setupWiFi()
 {
     // WiFiManager parameters
+
+    // Build and add timezone dropdown as custom HTML
+    WiFiManagerParameter custom_timezone_dropdown(buildTimezoneDropdown());
+
+    // Home Assistant and MQTT
     WiFiManagerParameter custom_mqtt_server("server", "mqtt server", mqtt_server, sizeof(mqtt_server));
     WiFiManagerParameter custom_mqtt_port("port", "mqtt port", mqtt_port, sizeof(mqtt_port));
     WiFiManagerParameter custom_workgroup("workgroup", "workgroup", workgroup, sizeof(workgroup));
     WiFiManagerParameter custom_mqtt_user("user", "MQTT username", username, sizeof(username));
     WiFiManagerParameter custom_mqtt_pass("pass", "MQTT password", password, sizeof(password));
-    WiFiManagerParameter custom_led_type("ledType", DEFAULT_LED_TYPE, ledType, sizeof(ledType));
-    WiFiManagerParameter custom_led_color_order("ledColorOrder", DEFAULT_LED_COLOR_ORDER, ledColorOrder, sizeof(ledColorOrder));
-    WiFiManagerParameter custom_led1("led1", "LED", configLed1, sizeof(configLed1));
     WiFiManagerParameter custom_temperature_scale("temp_scale", "Temperature scale", temp_scale, sizeof(temp_scale));
-    // Build and add timezone dropdown as custom HTML
-    WiFiManagerParameter custom_timezone_dropdown(buildTimezoneDropdown());
     #ifdef HOME_ASSISTANT_DISCOVERY
     WiFiManagerParameter custom_mqtt_ha_name("ha_name", "Device name for Home Assistant", ha_name, sizeof(ha_name));
     #endif
@@ -156,18 +153,15 @@ void NetworkConnector::setupWiFi()
     // WiFiManager setup
     WiFiManager wifiManager;
     wifiManager.setSaveConfigCallback(saveConfigCallbackWrapper);
-    // Add all parameters
+    // Add timezone dropdown
+    wifiManager.addParameter(&custom_timezone_dropdown);
+    // Add all other parameters
     wifiManager.addParameter(&custom_mqtt_server);
     wifiManager.addParameter(&custom_mqtt_port);
     wifiManager.addParameter(&custom_workgroup);
     wifiManager.addParameter(&custom_mqtt_user);
     wifiManager.addParameter(&custom_mqtt_pass);
-    wifiManager.addParameter(&custom_led_type);
-    wifiManager.addParameter(&custom_led_color_order);
-    wifiManager.addParameter(&custom_led1);
     wifiManager.addParameter(&custom_temperature_scale);
-    // Add timezone dropdown
-    wifiManager.addParameter(&custom_timezone_dropdown);
     #ifdef HOME_ASSISTANT_DISCOVERY
     wifiManager.addParameter(&custom_mqtt_ha_name);
     #endif
@@ -196,19 +190,12 @@ void NetworkConnector::setupWiFi()
     strcpy(workgroup, custom_workgroup.getValue());
     strcpy(username, custom_mqtt_user.getValue());
     strcpy(password, custom_mqtt_pass.getValue());
-    strcpy(ledType, custom_led_type.getValue());
-    strcpy(ledColorOrder, custom_led_color_order.getValue());
     // Get timezone from the form submission
     // WiFiManager doesn't provide getValue() for custom HTML, so we need to read it differently
     // The value will be in the POST data with name 'timezone'
     if (shouldSaveConfig) {
         // Timezone will be read from HTTP POST - WiFiManager handles this internally
         // For now, keep existing value - we'll get it after save
-    }
-    int saveLed1 = atoi(custom_led1.getValue());
-    if (saveLed1 <= 0)
-    {
-        saveLed1 = 10;
     }
     strcpy(temp_scale, custom_temperature_scale.getValue());
     #ifdef HOME_ASSISTANT_DISCOVERY
@@ -548,8 +535,6 @@ void NetworkConnector::loadConfig()
                     strcpy(workgroup, json["workgroup"]);
                     strcpy(username, json["username"]);
                     strcpy(password, json["password"]);
-                    strcpy(ledType, json["led_type"]);
-                    strcpy(ledColorOrder, json["led_color_order"]);
                     strcpy(temp_scale, json["temp_scale"]);
                     // Load timezone
                     const char *tz = json["timezone"];
@@ -589,8 +574,6 @@ void NetworkConnector::saveConfig()
     json["workgroup"] = workgroup;
     json["username"] = username;
     json["password"] = password;
-    json["led_type"] = ledType;
-    json["led_color_order"] = ledColorOrder;
     json["temp_scale"] = temp_scale;
     json["timezone"] = timezone;
     #ifdef HOME_ASSISTANT_DISCOVERY

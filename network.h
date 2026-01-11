@@ -39,9 +39,6 @@ private:
     char workgroup[32];
     char username[20];
     char password[20];
-    char configLed1[20];
-    char ledType[20];
-    char ledColorOrder[20];
     char temp_scale[40];
     char timezone[10];  // Stores timezone offset as string (e.g., "+2" or "-5")
     bool configTempCelsius;
