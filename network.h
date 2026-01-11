@@ -87,6 +87,7 @@ private:
     // Private methods - Timezone
     void updateTimezoneOffset();
     const char* buildTimezoneDropdown();
+    const char* buildTimezoneDetectJS();
     // Private methods - Temperature conversion
     float convertCelsiusToFahrenheit(float temperature);
     float convertTemperature(float temperature);

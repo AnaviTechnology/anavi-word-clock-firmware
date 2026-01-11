@@ -76,6 +76,7 @@ void NetworkConnector::updateTimezoneOffset()
     Serial.print(timezoneOffset);
     Serial.println(" seconds)");
 }
+
 const char* NetworkConnector::buildTimezoneDropdown()
 {
     static char dropdown[1600];
@@ -127,6 +128,43 @@ const char* NetworkConnector::buildTimezoneDropdown()
     strcat(dropdown, "</select>");
     return dropdown;
 }
+
+const char* NetworkConnector::buildTimezoneDetectJS()
+{
+    // Must be static so it survives after function returns
+    static const char js[] PROGMEM = R"rawliteral(
+<script>
+document.addEventListener("DOMContentLoaded", function () {
+  var tzSelect = document.getElementById("tz");
+  if (!tzSelect) return;
+
+  // Browser timezone offset in hours (can be fractional)
+  var offset = -new Date().getTimezoneOffset() / 60;
+
+  // Try exact match first
+  for (var i = 0; i < tzSelect.options.length; i++) {
+    if (tzSelect.options[i].value === offset.toString()) {
+      tzSelect.selectedIndex = i;
+      tzSelect.dispatchEvent(new Event("change"));
+      return;
+    }
+  }
+
+  // Fallback for floating point offsets (e.g. 5.5, 9.5)
+  for (var i = 0; i < tzSelect.options.length; i++) {
+    if (Math.abs(parseFloat(tzSelect.options[i].value) - offset) < 0.01) {
+      tzSelect.selectedIndex = i;
+      tzSelect.dispatchEvent(new Event("change"));
+      return;
+    }
+  }
+});
+</script>
+)rawliteral";
+
+    return js;
+}
+
 void NetworkConnector::setupWiFi()
 {
     // WiFiManager parameters
@@ -153,6 +191,9 @@ void NetworkConnector::setupWiFi()
     // WiFiManager setup
     WiFiManager wifiManager;
     wifiManager.setSaveConfigCallback(saveConfigCallbackWrapper);
+
+    wifiManager.setCustomHeadElement(buildTimezoneDetectJS());
+
     // Add timezone dropdown
     wifiManager.addParameter(&custom_timezone_dropdown);
     // Add all other parameters
